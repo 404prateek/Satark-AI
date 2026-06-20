@@ -1,0 +1,42 @@
+# ── Core framework ─────────────────────────────────────────────────────────────
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+
+# ── Database ───────────────────────────────────────────────────────────────────
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10        # optional: sync driver for Alembic migrations
+
+# ── Settings ───────────────────────────────────────────────────────────────────
+pydantic==2.10.4
+pydantic-settings==2.7.0
+pydantic[email]                # EmailStr support (email-validator)
+
+# ── Auth ───────────────────────────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# ── Groq client (phishing AI calls) ───────────────────────────────────────────
+groq==0.13.1
+
+# ── HTTP client (optional – async requests to external services) ───────────────
+httpx==0.28.1
+
+# ── OCR Pipeline ───────────────────────────────────────────────────────────────
+easyocr==1.7.2
+Pillow==11.0.0
+numpy==2.2.0
+
+# ── URL Analysis Engine ────────────────────────────────────────────────────────
+tldextract==5.1.3
+python-whois==0.9.5
+validators==0.34.0
+requests==2.32.3
+urllib3==2.3.0
+
+# ── ML / SHAP Explainability ───────────────────────────────────────────────────
+scikit-learn==1.6.1
+shap==0.46.0
+joblib==1.4.2
+pandas==2.2.3
+langdetect==1.0.9
