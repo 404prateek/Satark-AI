@@ -48,6 +48,7 @@ async def get_history(
                 "input_preview": (s.raw_input or s.ocr_text or "")[:120],
                 "verdict":     s.verdict.value if s.verdict else None,
                 "risk_score":  s.risk_score,
+                "certainty":   s.certainty,
                 "language":    s.language,
                 "created_at":  s.created_at.isoformat() if s.created_at else None,
             }
@@ -85,6 +86,7 @@ async def get_report(
         "raw_input": scan.raw_input,
         "verdict": scan.verdict.value if scan.verdict else None,
         "risk_score": scan.risk_score,
+        "certainty": scan.certainty,
         "confidence": scan.confidence,
         "language": scan.language,
         "component_scores": {

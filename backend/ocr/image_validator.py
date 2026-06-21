@@ -7,7 +7,7 @@ from PIL import Image
 
 ALLOWED_FORMATS = {'JPEG', 'PNG', 'WEBP'}
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
-MAX_DIMENSION = 4096
+MAX_DIMENSION = 20000
 
 def validate_image(file_bytes: bytes, filename: str = "") -> dict:
     """

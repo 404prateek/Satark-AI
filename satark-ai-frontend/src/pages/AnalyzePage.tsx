@@ -7,11 +7,14 @@ import RiskGauge, { Verdict } from '../components/analysis/RiskGauge'
 import VerdictBadge from '../components/analysis/VerdictBadge'
 import SHAPChart, { SHAPFeature } from '../components/analysis/SHAPChart'
 import ExplanationCard from '../components/analysis/ExplanationCard'
+import FeedbackWidget from '../components/analysis/FeedbackWidget'
+import URLReputationPanel from '../components/analysis/URLReputationPanel'
 import FeatureShowcase from '../components/landing/FeatureShowcase'
 import QRDetectedBadge from '../components/analysis/QRDetectedBadge'
 import UPIWarningCard from '../components/analysis/UPIWarningCard'
 
-import { analyzeMessage, analyzeImage, ScanResponse } from '../api/analyze'
+import { analyzeMessage, analyzeImage, analyzeURL, ScanResponse } from '../api/analyze'
+import { extractErrorMessage } from '../api/errorHandling'
 
 const TRIGGER_LABELS: Record<string, string> = {
   urgency_language: "Urgency language",
@@ -111,11 +114,13 @@ export default function AnalyzePage() {
   const { user, logout } = useAuthStore()
   const [message, setMessage] = useState('')
   const [inputTab, setInputTab] = useState<'text' | 'screenshot' | 'url'>('text')
+  const [urlInput, setUrlInput] = useState('')
   const [copied, setCopied] = useState(false)
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [isLongScreenshot, setIsLongScreenshot] = useState(false)
   const [fileError, setFileError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -131,6 +136,11 @@ export default function AnalyzePage() {
     onSuccess: (data) => setScanResult(data),
   })
 
+  const urlMutation = useMutation<ScanResponse, Error, string>({
+    mutationFn: analyzeURL,
+    onSuccess: (data) => setScanResult(data),
+  })
+
   const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     setScanResult(null)
@@ -140,6 +150,9 @@ export default function AnalyzePage() {
     } else if (inputTab === 'screenshot') {
       if (!selectedFile) return
       imageMutation.mutate(selectedFile)
+    } else if (inputTab === 'url') {
+      if (!urlInput.trim()) return
+      urlMutation.mutate(urlInput.trim())
     }
   }
 
@@ -148,6 +161,24 @@ export default function AnalyzePage() {
     setMessage(text)
     setScanResult(null)
     messageMutation.mutate(text)
+  }
+
+  const handleExampleImage = async (imagePath: string, tabName: string) => {
+    setInputTab('screenshot')
+    setScanResult(null)
+    try {
+      const response = await fetch(imagePath)
+      const blob = await response.blob()
+      const file = new File([blob], tabName + '.png', { type: blob.type || 'image/png' })
+      setSelectedFile(file)
+      // Small delay to allow UI to update the tab before mutation starts
+      setTimeout(() => {
+        imageMutation.mutate(file)
+      }, 50)
+    } catch (e) {
+      console.error("Failed to load demo image", e)
+      alert("Failed to load demo image.")
+    }
   }
 
   const handleCopy = async () => {
@@ -179,6 +210,7 @@ export default function AnalyzePage() {
 
   const handleFileSelect = (file: File) => {
     setFileError(null)
+    setIsLongScreenshot(false)
     imageMutation.reset()
     if (file.size > 5 * 1024 * 1024) {
       setFileError('File size exceeds 5MB limit.')
@@ -188,12 +220,24 @@ export default function AnalyzePage() {
       setFileError('Invalid file type. Please upload a JPG, PNG, or WEBP image.')
       return
     }
+    
+    const objUrl = URL.createObjectURL(file)
+    const img = new window.Image()
+    img.onload = () => {
+      const aspectRatio = Math.max(img.width / img.height, img.height / img.width)
+      if (aspectRatio > 4) {
+        setIsLongScreenshot(true)
+      }
+    }
+    img.src = objUrl
+    
     setSelectedFile(file)
-    setPreviewUrl(URL.createObjectURL(file))
+    setPreviewUrl(objUrl)
   }
 
   const clearFile = () => {
     setSelectedFile(null)
+    setIsLongScreenshot(false)
     if (previewUrl) URL.revokeObjectURL(previewUrl)
     setPreviewUrl(null)
     setFileError(null)
@@ -202,16 +246,28 @@ export default function AnalyzePage() {
   }
 
   const result = scanResult
-  const isPending = messageMutation.isPending || imageMutation.isPending
-  const isError = messageMutation.isError
-  const errorMessage = messageMutation.error?.message
+  const isPending = messageMutation.isPending || imageMutation.isPending || urlMutation.isPending
+  const isError = messageMutation.isError || urlMutation.isError
+  const errorMessage = messageMutation.error ? extractErrorMessage(messageMutation.error) :
+                       urlMutation.error ? extractErrorMessage(urlMutation.error) : null
   const vColor = verdictColor(result?.verdict)
 
-  const topReason = (result?.behavioral_triggers && result.behavioral_triggers.length > 0)
-    ? result.behavioral_triggers.slice(0, 2).map(formatTriggerLabel).join(" + ")
-    : ((result?.shap_features && result.shap_features.length > 0) 
-        ? `Suspicious pattern: ${result.shap_features[0].feature}` 
-        : "Suspicious language pattern detected")
+  const topReason = (() => {
+    if (result?.verdict === 'SAFE') {
+      return result.behavioral_triggers?.length > 0
+        ? formatTriggerLabel(result.behavioral_triggers[0])
+        : 'No significant threat indicators'
+    }
+    if (result?.behavioral_triggers && result.behavioral_triggers.length > 0) {
+      return result.behavioral_triggers.slice(0, 2).map(formatTriggerLabel).join(' + ')
+    }
+    if (result?.shap_features && result.shap_features.length > 0) {
+      // Filter out very short/generic tokens before displaying
+      const meaningful = result.shap_features.filter(f => f.feature.length > 3 && f.value > 0)
+      if (meaningful.length > 0) return `Suspicious pattern: ${meaningful[0].feature}`
+    }
+    return 'Suspicious language pattern detected'
+  })()
 
   return (
     <div className="relative w-full flex-1">
@@ -406,8 +462,8 @@ export default function AnalyzePage() {
               
               {imageMutation.isError ? (
                 <div className="flex flex-col items-center gap-3 w-full">
-                  <div className="text-red-400 font-bold text-sm">
-                    ⚠️ Couldn't read any text from this image. Try a clearer screenshot.
+                  <div className="text-red-400 font-bold text-sm text-center">
+                    ⚠️ {extractErrorMessage(imageMutation.error)}
                   </div>
                   <button 
                     type="button" 
@@ -418,7 +474,12 @@ export default function AnalyzePage() {
                   </button>
                 </div>
               ) : previewUrl ? (
-                <div className="relative w-full h-full flex items-center justify-center">
+                <div className="relative w-full h-full flex flex-col items-center justify-center">
+                  {isLongScreenshot && (
+                    <div className="absolute top-2 left-0 right-0 z-10 mx-auto w-max max-w-[90%] bg-yellow-500/20 border border-yellow-500/50 text-yellow-200 text-[10px] px-2 py-1 rounded-md backdrop-blur-md text-center">
+                      ⚠️ This looks like a long scrolling screenshot — we'll automatically resize it for analysis.
+                    </div>
+                  )}
                   <img src={previewUrl} alt="Preview" className="max-h-full object-contain rounded" />
                   <button 
                     type="button" 
@@ -431,7 +492,10 @@ export default function AnalyzePage() {
                   {imageMutation.isPending && (
                     <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center rounded gap-3">
                       <Loader2 size={24} className="animate-spin text-[#DFFF00]" />
-                      <span className="text-[#DFFF00] text-sm font-medium">Reading text from image...</span>
+                      <span className="text-[#DFFF00] text-sm font-medium">Reading text from image…</span>
+                      <span className="text-white/40 text-xs text-center max-w-[220px]">
+                        First scan may take up to 90s while OCR model loads
+                      </span>
                     </div>
                   )}
                 </div>
@@ -449,8 +513,8 @@ export default function AnalyzePage() {
             <input
               type="url"
               placeholder="https://example.com"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
+              value={urlInput}
+              onChange={(e) => setUrlInput(e.target.value)}
               style={{
                 width: '100%',
                 background: 'rgba(255,255,255,0.03)',
@@ -469,41 +533,75 @@ export default function AnalyzePage() {
           )}
 
           {/* Example chips */}
-          <div className="flex flex-wrap gap-2 items-center">
-            <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Try:</span>
-            {DEMO_INPUTS.map((ex, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => handleExample(ex.text)}
-                style={{
-                  fontSize: 11,
-                  background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  borderRadius: 8,
-                  padding: '0.3rem 0.75rem',
-                  color: '#666',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s',
-                  fontFamily: "'Outfit', sans-serif",
-                }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(223,255,0,0.3)'; e.currentTarget.style.color = '#DFFF00' }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#666' }}
-                title={ex.text}
-              >
-                {ex.label}
-              </button>
-            ))}
+          <div className="flex flex-col gap-3 mb-2">
+            <div className="flex flex-wrap gap-2 items-center">
+              <span style={{ fontSize: 11, color: '#444', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Try:</span>
+              {DEMO_INPUTS.map((ex, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => handleExample(ex.text)}
+                  style={{
+                    fontSize: 11,
+                    background: 'rgba(255,255,255,0.04)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: 8,
+                    padding: '0.3rem 0.75rem',
+                    color: '#666',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    fontFamily: "'Outfit', sans-serif",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(223,255,0,0.3)'; e.currentTarget.style.color = '#DFFF00' }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#666' }}
+                  title={ex.text}
+                >
+                  {ex.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Stress Tests */}
+            <div className="flex flex-wrap gap-2 items-center">
+              <span style={{ fontSize: 11, color: '#F59E0B', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Stress Tests:</span>
+              {[
+                { label: "Axis OCR Noise", path: "/stress_axis.png" },
+                { label: "Jio Hindi Ambiguous", path: "/stress_jio.png" },
+                { label: "Messy Email Forward", path: "/stress_email.png" }
+              ].map((ex, i) => (
+                <button
+                  key={`stress-${i}`}
+                  type="button"
+                  onClick={() => handleExampleImage(ex.path, ex.label)}
+                  style={{
+                    fontSize: 11,
+                    background: 'rgba(245,158,11,0.05)',
+                    border: '1px solid rgba(245,158,11,0.2)',
+                    borderRadius: 8,
+                    padding: '0.3rem 0.75rem',
+                    color: '#F59E0B',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    fontFamily: "'Outfit', sans-serif",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(245,158,11,0.5)'; e.currentTarget.style.color = '#FCD34D' }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(245,158,11,0.2)'; e.currentTarget.style.color = '#F59E0B' }}
+                  title={ex.text}
+                >
+                  {ex.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Submit */}
           <button
             id="analyze-submit"
             type="submit"
-            disabled={isPending || (inputTab === 'text' && !message.trim()) || (inputTab === 'screenshot' && !selectedFile)}
+            disabled={isPending || (inputTab === 'text' && !message.trim()) || (inputTab === 'screenshot' && !selectedFile) || (inputTab === 'url' && !urlInput.trim())}
             title={inputTab === 'screenshot' && !selectedFile ? "Upload a screenshot first" : ""}
             className="btn-acid flex items-center gap-2"
-            style={{ fontSize: 12, opacity: (isPending || (inputTab === 'text' && !message.trim()) || (inputTab === 'screenshot' && !selectedFile)) ? 0.5 : 1, cursor: (isPending || (inputTab === 'text' && !message.trim()) || (inputTab === 'screenshot' && !selectedFile)) ? 'not-allowed' : 'pointer' }}
+            style={{ fontSize: 12, opacity: (isPending || (inputTab === 'text' && !message.trim()) || (inputTab === 'screenshot' && !selectedFile) || (inputTab === 'url' && !urlInput.trim())) ? 0.5 : 1, cursor: (isPending || (inputTab === 'text' && !message.trim()) || (inputTab === 'screenshot' && !selectedFile) || (inputTab === 'url' && !urlInput.trim())) ? 'not-allowed' : 'pointer' }}
           >
             {isPending ? (
               <><Loader2 size={16} className="animate-spin" /> Analysing…</>
@@ -547,7 +645,7 @@ export default function AnalyzePage() {
                   <h3 style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#888' }}>
                     📄 Extracted Text
                   </h3>
-                  {result.ocr_confidence !== undefined && (
+                  {result.ocr_confidence != null && (
                     <span className="px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-bold">
                       {Math.round(result.ocr_confidence * 100)}% confidence
                     </span>
@@ -571,9 +669,21 @@ export default function AnalyzePage() {
                 <div className="flex flex-col items-center gap-2">
                   <VerdictBadge verdict={result.verdict} size="lg" />
                   <div className="flex items-start gap-1.5 text-sm mt-1 max-w-[280px] text-center font-medium" style={{ color: vColor }}>
-                    <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-                    <span>Detected: {topReason}</span>
+                    {result.verdict === 'SAFE'
+                      ? <ShieldCheck size={15} className="mt-0.5 shrink-0" />
+                      : <AlertTriangle size={15} className="mt-0.5 shrink-0" />}
+                    <span>{result.verdict === 'SAFE' ? 'Status: ' : 'Detected: '}{topReason}</span>
                   </div>
+                  {result.certainty !== 'high' && (
+                    <div className="mt-2 p-3 rounded-md flex items-start gap-2 max-w-[300px] text-left" style={{ background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
+                      <AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: '#60A5FA' }} />
+                      <span style={{ fontSize: 11, color: '#93C5FD', lineHeight: 1.4, fontFamily: "'Outfit', sans-serif" }}>
+                        {result.certainty === 'low' 
+                          ? "This message has unusual characteristics our system hasn't seen much of. Use your own judgment alongside this result."
+                          : "Moderate confidence — consider the explanation below carefully."}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -633,10 +743,17 @@ export default function AnalyzePage() {
               </div>
             )}
 
+            {/* URL Reputation — multi-source breakdown */}
+            <URLReputationPanel urlAnalysis={result.url_analysis} />
+
             {/* SHAP chart */}
             {result.shap_features.length > 0 && (
               <div id="shap-section" className="glass p-6">
-                <SHAPChart features={result.shap_features} maxItems={6} />
+                <SHAPChart 
+                  features={result.shap_features} 
+                  maxItems={6} 
+                  isSafeVerdict={result.risk_score < 40}
+                />
               </div>
             )}
 
@@ -703,6 +820,12 @@ export default function AnalyzePage() {
               explanation={result.explanation}
               isLoading={false}
               model={result.model_version}
+            />
+
+            {/* Feedback widget — below-the-fold, non-intrusive */}
+            <FeedbackWidget
+              scanId={result.scan_id}
+              verdict={result.verdict}
             />
           </div>
         )}

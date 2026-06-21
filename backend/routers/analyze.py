@@ -77,6 +77,7 @@ class ScanResponse(BaseModel):
     scan_id:           str
     verdict:           str        # SAFE | SUSPICIOUS | PHISHING
     risk_score:        int        # 0–100
+    certainty:         str        # high | medium | low
     confidence:        float      # 0.0–1.0 (NLP confidence of the predicted class)
     language:          str
     component_scores:  dict
@@ -126,12 +127,15 @@ async def _run_core(
     url_found: Optional[str] = url_match.group(0) if url_match else None
     url_score = 0.0
     url_analysis_dict: Optional[dict] = None
+    url_insufficient_data: bool = False
 
     if url_found:
         try:
-            result = await asyncio.to_thread(_url_analyzer.analyze, url_found)
+            # URLAnalyzer.analyze() is now async — call directly
+            result = await _url_analyzer.analyze(url_found)
             url_score = result.score
             url_analysis_dict = result.to_dict()
+            url_insufficient_data = result.insufficient_reputation_data
         except Exception as exc:
             logger.warning("URL analysis failed for '%s': %s", url_found, exc)
 
@@ -143,6 +147,9 @@ async def _run_core(
         ocr_score=(nlp_score * (ocr_confidence or 0.8)) if extracted_text else 0.0,
         has_url=url_found is not None,
         has_image=extracted_text is not None,
+        url_insufficient_data=url_insufficient_data,
+        text_length=len(text),
+        language=language,
     )
 
     # 6. Groq LLM explanation
@@ -169,6 +176,7 @@ async def _run_core(
             language=language,
             verdict=Verdict(risk["verdict"]),
             risk_score=float(risk["risk_score"]),
+            certainty=risk["certainty"],
             confidence=nlp_confidence,
             model_version="v1.0",
             shap_features=shap_list,
@@ -200,6 +208,7 @@ async def _run_core(
         scan_id=scan_id,
         verdict=risk["verdict"],
         risk_score=risk["risk_score"],
+        certainty=risk["certainty"],
         confidence=nlp_confidence,
         language=language,
         component_scores=risk["component_scores"],
@@ -246,7 +255,7 @@ async def analyze_url(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ScanResponse:
-    text = f"Analyse this link: {body.url}"
+    text = body.url
     return await _run_core(text=text, db=db, user=user, input_type=ScanInputType.url)
 
 
@@ -262,17 +271,28 @@ async def analyze_image(
 ) -> ScanResponse:
     image_bytes = await file.read()
 
-    # Validate image type, size, dimensions
-    validation = validate_image(image_bytes, file.filename or "upload")
-    if not validation.get("valid", False):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=validation.get("error", "Invalid image"),
-        )
-
     # Lazy-import OCR service to avoid EasyOCR loading on non-image requests
     from backend.services.ocr_service import extract_from_image  # type: ignore
-    ocr_result = await extract_from_image(image_bytes)
+    from backend.ocr.ocr_pipeline import OCRTimeoutError, OCRProcessingError
+    
+    try:
+        ocr_result = await extract_from_image(image_bytes, file.filename or "upload")
+    except ValueError as ve:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(ve),
+        )
+    except OCRTimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="Image processing took too long. Try a smaller or clearer screenshot."
+        )
+    except OCRProcessingError as e:
+        logger.error(f"OCR processing error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="We couldn't process this image right now. Please try again or use a different screenshot."
+        )
 
     extracted_text: str = ocr_result.get("text", "").strip()
     ocr_confidence: float = float(ocr_result.get("confidence", 0.0))
@@ -280,7 +300,7 @@ async def analyze_image(
     if not extracted_text:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="No text could be extracted from this image. Try a higher-resolution screenshot.",
+            detail="No text could be detected in this image. Try a clearer screenshot with visible text."
         )
 
     return await _run_core(

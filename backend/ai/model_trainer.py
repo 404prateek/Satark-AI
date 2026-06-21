@@ -123,13 +123,54 @@ def _augment_with_indian_samples(df: pd.DataFrame) -> pd.DataFrame:
 
 def normalize_numbers(text: str) -> str:
     import re
-    # Convert "15,000" or "₹15,000" or "Rs 15,000" into a clean token
-    text = re.sub(r'[₹]|Rs\.?\s*', 'RUPEE_ ', text, flags=re.IGNORECASE)
-    text = re.sub(r'(\d{1,3}(?:,\d{2,3})+)', lambda m: 'AMOUNT_' + 
-                  ('LARGE' if int(m.group(1).replace(',','')) >= 10000 
-                   else 'MEDIUM'), text)
-    text = re.sub(r'\b\d{10}\b', 'PHONE_NUMBER', text)  # 10-digit Indian numbers
-    text = re.sub(r'\b\d{4,9}\b', 'NUMBER_TOKEN', text)  # other multi-digit numbers
+    # ── IMPORTANT: longer alternatives MUST come before shorter ones in each
+    # alternation group, otherwise regex short-circuits on the prefix.
+    # e.g. (Crore|CR) not (CR|Crore) — else "Rs 2 Crore" eats only "CR"
+    # leaving "ore" as a dangling word.
+
+    _SUFFIX = r'(?:Crore|crore|CR|cr|Lakh|lakh|L|K|k)'
+
+    # 1. ₹ / र / रु + number (+ optional suffix)
+    text = re.sub(
+        r'[₹\u0930\u0930\u0941]\s*(\d+(?:\.\d+)?)\s*(' + _SUFFIX + r')?',
+        lambda m: f' AMOUNT_{"LARGE" if m.group(2) and m.group(2).upper() in ("CR", "CRORE") else "MEDIUM"} ',
+        text,
+    )
+
+    # 2. Rs / Rs. + number (+ optional suffix)
+    text = re.sub(
+        r'\bRs\.?\s*(\d+(?:,\d{2,3})*(?:\.\d+)?)\s*(' + _SUFFIX + r')?',
+        lambda m: f' AMOUNT_{"LARGE" if m.group(2) and m.group(2).upper() in ("CR", "CRORE") else "MEDIUM"} ',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # 3. Bare number + suffix (e.g. "20K Invested", "3.5CR Fund")
+    text = re.sub(
+        r'\b(\d+(?:\.\d+)?)\s*(' + _SUFFIX + r')\b',
+        lambda m: f' AMOUNT_{"LARGE" if m.group(2).upper() in ("CR", "CRORE") else "MEDIUM"} ',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # 4. Phone numbers (exactly 10 digits)
+    text = re.sub(r'\b\d{10}\b', ' PHONE_NUMBER ', text)
+
+    # 5. Long numeric strings (4-9 digits) — but EXEMPT year-ranges like 1981-2001
+    # A year-range is: 4-digit hyphen 4-digit where both look like plausible years.
+    # We replace them with a neutral YEAR_RANGE token instead of mangling to NUMBER_TOKEN.
+    text = re.sub(r'\b(19|20)\d{2}-(19|20)\d{2}\b', ' YEAR_RANGE ', text)
+    text = re.sub(r'\b\d{4,9}\b', ' NUMBER_TOKEN ', text)
+
+    return text
+
+
+def clean_ocr_artifacts(text: str) -> str:
+    import re
+    # Remove standalone emoji (common in WhatsApp/marketing screenshots)
+    text = re.sub(r'[\U0001F300-\U0001FAFF\U00002600-\U000027BF]', ' ', text)
+    # Collapse multiple spaces left by removals
+    text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 def preprocess_for_tokens(text: str) -> str:
@@ -140,6 +181,8 @@ def preprocess_for_tokens(text: str) -> str:
     text = re.sub(r'[/?&=]', ' ', text)        # break up URL structure
     text = re.sub(r'([a-z])-([a-z])', r'\1 \2', text)  # "hdfc-verify" -> "hdfc verify"
     text = re.sub(r'\.(com|xyz|in|co|tk|ml)\b', r' DOT_\1', text)  # flag suspicious TLDs as a token
+    
+    text = clean_ocr_artifacts(text)
     return text
 
 def build_pipeline() -> Pipeline:
@@ -167,23 +210,63 @@ def build_pipeline() -> Pipeline:
     )
 
 
-def train() -> Pipeline:
+def train(include_feedback: bool = False) -> Pipeline:
     """
     Full training routine:
       1. Download + augment dataset.
-      2. Train the Pipeline.
-      3. Evaluate on held-out test set.
-      4. Save to disk with joblib.
+      2. (Optional) Concatenate user-feedback-derived corrections.
+      3. Train the Pipeline.
+      4. Evaluate on held-out test set.
+      5. Save to disk with joblib.
+
+    Args:
+        include_feedback: When True, exports all user corrections from the DB
+                          and concatenates them with the base dataset before
+                          training.  Pass True for scheduled nightly retraining;
+                          leave False for a clean baseline rebuild.
 
     Returns:
         The fitted Pipeline.
     """
     logger.info("=== Satark AI — Phishing Classifier Training ===")
 
-    # 1. Data
+    # 1. Base data
     df = _load_dataset()
     df = _augment_with_indian_samples(df)
-    logger.info(f"Total samples: {len(df)}  (spam={sum(df.label=='spam')}, ham={sum(df.label=='ham')})")
+    base_count = len(df)
+    logger.info(
+        "Base dataset: %d samples  (spam=%d, ham=%d)",
+        base_count, sum(df.label == "spam"), sum(df.label == "ham"),
+    )
+
+    # 2. Optionally merge feedback corrections
+    if include_feedback:
+        try:
+            from backend.services.training_data_export import export_labeled_corrections
+            feedback_df = export_labeled_corrections()
+            if not feedback_df.empty:
+                # Keep only label + text columns to match base dataset shape
+                feedback_subset = feedback_df[["label", "text"]].copy()
+                # Oversample feedback ×3 — real-world corrections are scarce
+                # and high-signal; up-weight them to have meaningful influence.
+                feedback_oversampled = pd.concat(
+                    [feedback_subset] * 3, ignore_index=True
+                )
+                df = pd.concat([df, feedback_oversampled], ignore_index=True)
+                df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+                logger.info(
+                    "Feedback merge: +%d rows (%d unique × 3 oversample) "
+                    "→ total %d samples",
+                    len(feedback_oversampled),
+                    len(feedback_subset),
+                    len(df),
+                )
+            else:
+                logger.info("No feedback rows available yet — training on base dataset only.")
+        except Exception as exc:
+            logger.warning(
+                "Failed to load feedback data (training continues without it): %s", exc
+            )
 
     X = df["text"].tolist()
     # Binary labels: 1 = phishing/spam, 0 = safe/ham
@@ -193,23 +276,24 @@ def train() -> Pipeline:
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    # 2. Train
+    # 3. Train
     logger.info("Training TF-IDF + MultinomialNB pipeline …")
     pipeline = build_pipeline()
     pipeline.fit(X_train, y_train)
 
-    # 3. Evaluate
+    # 4. Evaluate
     y_pred = pipeline.predict(X_test)
     acc = accuracy_score(y_test, y_pred)
     logger.info(f"\nAccuracy: {acc:.4f}")
     logger.info("\n" + classification_report(y_test, y_pred, target_names=["Safe", "Phishing"]))
 
-    # 4. Save
+    # 5. Save
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(pipeline, MODEL_PATH)
     logger.info(f"Model saved → {MODEL_PATH}")
 
     return pipeline
+
 
 
 # ── SHAP test ─────────────────────────────────────────────────────────────────

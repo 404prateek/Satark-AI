@@ -1,4 +1,4 @@
-# Satark AI – Python gitignore extras
+# ── Python ────────────────────────────────────────────────────────────────────
 .env
 __pycache__/
 *.py[cod]
@@ -17,3 +17,24 @@ build/
 htmlcov/
 .coverage
 
+# ── Database ───────────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Temporary / debug scripts (one-off, not part of the project) ───────────────
+test_*.py
+check_db.py
+fetch_axis.py
+create_mock_images.py
+axis_text.txt
+test_integration.sh
+
+# ── Frontend ───────────────────────────────────────────────────────────────────
+satark-ai-frontend/node_modules/
+satark-ai-frontend/dist/
+satark-ai-frontend/.vite/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

@@ -38,12 +38,15 @@ _THRESHOLD_SUSPICIOUS = 40
 
 def calculate_risk(
     *,
-    nlp_score: float,          # 0.0 – 1.0  P(phishing) from MultinomialNB
-    behavioral_score: float,   # 0.0 – 1.0  from behavioral_service
-    url_score: float = 0.0,    # 0.0 – 1.0  from URLAnalyzer
-    ocr_score: float = 0.0,    # 0.0 – 1.0  (nlp_score × ocr_confidence)
+    nlp_score: float,                      # 0.0 – 1.0  P(phishing) from MultinomialNB
+    behavioral_score: float,               # 0.0 – 1.0  from behavioral_service
+    url_score: float = 0.0,               # 0.0 – 1.0  from URLAnalyzer (includes insuf. bump)
+    ocr_score: float = 0.0,               # 0.0 – 1.0  (nlp_score × ocr_confidence)
     has_url: bool = False,
     has_image: bool = False,
+    url_insufficient_data: bool = False,   # True when all reputation sources blind
+    text_length: int = 0,                  # used for certainty metric
+    language: str = "en",                  # used for certainty metric
 ) -> dict:
     """
     Returns a dict with:
@@ -75,13 +78,53 @@ def calculate_risk(
     else:
         verdict = "SAFE"
 
+    # ── Certainty Calculation ─────────────────────────────────────────────────
+    certainty = "high"
+    
+    # 1. Borderline cases (within 5 points of a boundary)
+    if (35 <= risk_score <= 45) or (65 <= risk_score <= 75):
+        certainty = "medium"
+        
+    # 2. Extreme lengths relative to training distribution
+    if text_length < 20 or text_length > 2000:
+        certainty = "medium" if certainty == "high" else "low"
+        
+    # 3. Unsupported languages (model was trained on en/hi/hinglish)
+    if language.lower() not in {"en", "hi", "hinglish"}:
+        certainty = "low"
+
+    # Actual effective weights after redistribution
+    beh_weight = _WEIGHT_BEHAVIORAL
+
+    # Contributions (rounded to 1 dp for UI display)
+    def _contrib(score: float, weight: float) -> float:
+        return round(score * weight * 100, 1)
+
     return {
         "risk_score": risk_score,
         "verdict":    verdict,
+        "certainty":  certainty,
         "component_scores": {
-            "nlp":        round(nlp_score * 100),
-            "behavioral": round(behavioral_score * 100),
-            "url":        round(url_score * 100) if has_url   else None,
-            "ocr":        round(ocr_score * 100) if has_image else None,
+            "nlp": {
+                "score":        round(nlp_score * 100),
+                "weight":       round(nlp_weight, 2),
+                "contribution": _contrib(nlp_score, nlp_weight),
+            },
+            "behavioral": {
+                "score":        round(behavioral_score * 100),
+                "weight":       round(beh_weight, 2),
+                "contribution": _contrib(behavioral_score, beh_weight),
+            },
+            "url": {
+                "score":              round(url_score * 100) if has_url else None,
+                "weight":             round(url_weight, 2),
+                "contribution":       _contrib(url_score, url_weight) if has_url else None,
+                "insufficient_data":  url_insufficient_data,
+            } if has_url else None,
+            "ocr": {
+                "score":        round(ocr_score * 100) if has_image else None,
+                "weight":       round(ocr_weight, 2),
+                "contribution": _contrib(ocr_score, ocr_weight) if has_image else None,
+            } if has_image else None,
         },
     }

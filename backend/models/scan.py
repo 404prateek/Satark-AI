@@ -70,6 +70,7 @@ class Scan(Base):
         index=True,
     )
     risk_score:    Mapped[float]   = mapped_column(Float, nullable=False)     # 0–100
+    certainty:     Mapped[str]     = mapped_column(String(20), default="high", nullable=False, server_default="high")
     confidence:    Mapped[float]   = mapped_column(Float, nullable=False)     # 0–1
     model_version: Mapped[str]     = mapped_column(String(64), nullable=False, default="v1.0")
 

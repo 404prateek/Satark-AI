@@ -11,6 +11,7 @@ from backend.models.armoriq_log import ArmorIQLog, ArmorIQOutcome       # noqa: 
 from backend.models.threat_report import (                               # noqa: F401
     ThreatReport, ThreatSeverity, ThreatCategory,
 )
+from backend.models.feedback import ScanFeedback                         # noqa: F401
 
 __all__ = [
     "Base", "SessionLocal", "engine", "get_db",
@@ -19,4 +20,5 @@ __all__ = [
     "AuditLog",
     "ArmorIQLog", "ArmorIQOutcome",
     "ThreatReport", "ThreatSeverity", "ThreatCategory",
+    "ScanFeedback",
 ]

@@ -59,11 +59,13 @@ def _build_prompt(
     trig_str = ", ".join(triggers) if triggers else "none"
 
     lang_instruction = (
-        "Respond in simple Hindi (3-4 short sentences). "
-        "Use everyday language — no technical jargon."
+        "IMPORTANT: Respond ONLY in proper Hindi written in Devanagari script "
+        "(e.g. यह संदेश…). Do NOT use romanized Hindi (e.g. 'Yeh message'). "
+        "Keep it simple — 3-4 short sentences, no technical jargon."
         if language in ("hi", "hinglish")
-        else "Respond in simple English (3-4 short sentences). "
-        "No technical jargon — write for a non-technical reader."
+        else "IMPORTANT: Respond ONLY in plain English. "
+        "Do NOT use Hindi or Hinglish. "
+        "3-4 short sentences written for a non-technical reader."
     )
 
     return (
@@ -89,8 +91,8 @@ async def get_explanation(
     Returns a natural-language explanation of the analysis result.
     Never raises — falls back to a rule-based message on any error.
     """
-    # Skip LLM for clearly safe messages to save API credits
-    if risk_score < 35:
+    # Skip LLM only for very clearly safe messages (score < 20) to save API credits
+    if risk_score < 20:
         return (
             _SAFE_EXPLANATION_HI if language in ("hi", "hinglish")
             else _SAFE_EXPLANATION_EN

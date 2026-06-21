@@ -17,6 +17,7 @@ export interface SHAPFeature {
 interface SHAPChartProps {
   features: SHAPFeature[]
   maxItems?: number
+  isSafeVerdict?: boolean
 }
 
 // ── Custom tooltip ─────────────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ function FeatureTick({ x = 0, y = 0, payload }: AxisTickProps) {
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
-export default function SHAPChart({ features, maxItems = 6 }: SHAPChartProps) {
+export default function SHAPChart({ features, maxItems = 6, isSafeVerdict = false }: SHAPChartProps) {
   const sorted = [...features]
     .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
     .slice(0, maxItems)
@@ -77,6 +78,18 @@ export default function SHAPChart({ features, maxItems = 6 }: SHAPChartProps) {
 
   const barHeight = 34
   const chartHeight = Math.max(200, sorted.length * barHeight + 40)
+
+  // 1. Calculate explicit domain bounds ensuring 0 is always visible
+  const values = sorted.map(f => f.value)
+  const minValue = Math.min(0, ...values)
+  const maxValue = Math.max(0, ...values)
+
+  // 3. Function to determine bar color based on magnitude and sign
+  const getBarColor = (val: number) => {
+    if (val < 0) return '#22C55E' // negative = green (reduces risk)
+    if (val < 0.15) return '#F59E0B' // positive but low = amber (minor nudge)
+    return '#EF4444' // positive high = red (strong signal)
+  }
 
   return (
     <div className="w-full">
@@ -90,6 +103,13 @@ export default function SHAPChart({ features, maxItems = 6 }: SHAPChartProps) {
         <p className="text-xs text-slate-400 mt-1.5">
           These are the specific words and patterns that pushed this message's risk score up.
         </p>
+        {isSafeVerdict && (
+          <div className="mt-3 px-3 py-2 rounded-lg" style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)' }}>
+            <p style={{ fontSize: 11, color: '#4ADE80', margin: 0, fontFamily: "'Inter', sans-serif" }}>
+              <strong>Note:</strong> Even safe messages have some contributing words — what matters is the OVERALL score, not individual bars.
+            </p>
+          </div>
+        )}
       </div>
 
       {sorted.length === 0 ? (
@@ -103,7 +123,7 @@ export default function SHAPChart({ features, maxItems = 6 }: SHAPChartProps) {
           >
             <XAxis
               type="number"
-              domain={['auto', 'auto']}
+              domain={[minValue, maxValue]}
               tick={{ fill: '#475569', fontSize: 10, fontFamily: 'Inter, sans-serif' }}
               axisLine={{ stroke: '#334155' }}
               tickLine={false}
@@ -120,12 +140,12 @@ export default function SHAPChart({ features, maxItems = 6 }: SHAPChartProps) {
               content={<CustomTooltip />}
               cursor={{ fill: 'rgba(255,255,255,0.03)' }}
             />
-            <ReferenceLine x={0} stroke="#334155" strokeWidth={1} />
+            <ReferenceLine x={0} stroke="#666" strokeWidth={1} />
             <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={22}>
               {sorted.map((entry, index) => (
                 <Cell
                   key={`cell-${index}`}
-                  fill={entry.value >= 0 ? '#EF4444' : '#22C55E'}
+                  fill={getBarColor(entry.value)}
                   fillOpacity={0.85}
                 />
               ))}
@@ -136,12 +156,16 @@ export default function SHAPChart({ features, maxItems = 6 }: SHAPChartProps) {
 
       <div className="flex items-center gap-4 mt-3 text-xs text-slate-500">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-500/70" />
-          Increases phishing risk
+          <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-500/80" />
+          Increases risk (strong)
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-2.5 h-2.5 rounded-sm bg-green-500/70" />
-          Reduces phishing risk
+          <span className="inline-block w-2.5 h-2.5 rounded-sm bg-amber-500/80" />
+          Increases risk (minor)
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-2.5 h-2.5 rounded-sm bg-green-500/80" />
+          Reduces risk
         </span>
       </div>
     </div>

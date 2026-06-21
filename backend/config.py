@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
+    PHISHTANK_API_KEY: str = ""
+    GOOGLE_SAFE_BROWSING_API_KEY: str = ""
+    VIRUSTOTAL_API_KEY: str = ""
 
     # ── Application ───────────────────────────────────────────────────────────
     APP_NAME: str = "Satark AI"
